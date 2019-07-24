@@ -20,16 +20,19 @@ _LOGGER = logging.getLogger(__name__)
 
 CONF_SOURCES = 'sources'
 CONF_MAX_VOLUME = 'max_volume'
+CONF_ZONES = 'zones'
+CONF_INVALID_ZONES_ERR = 'Invalid Zone (expected Zone2 or Zone3)'
+CONF_VALID_ZONES = ['Zone2', 'Zone3']
 
 DEFAULT_NAME = 'Onkyo Receiver'
 SUPPORTED_MAX_VOLUME = 80
 
 SUPPORT_ONKYO = SUPPORT_VOLUME_SET | SUPPORT_VOLUME_MUTE | \
-    SUPPORT_VOLUME_STEP | SUPPORT_TURN_ON | SUPPORT_TURN_OFF | \
-    SUPPORT_SELECT_SOURCE | SUPPORT_PLAY | SUPPORT_PLAY_MEDIA
+                SUPPORT_VOLUME_STEP | SUPPORT_TURN_ON | SUPPORT_TURN_OFF | \
+                SUPPORT_SELECT_SOURCE | SUPPORT_PLAY | SUPPORT_PLAY_MEDIA
 
 SUPPORT_ONKYO_WO_VOLUME = SUPPORT_TURN_ON | SUPPORT_TURN_OFF | \
-    SUPPORT_SELECT_SOURCE | SUPPORT_PLAY | SUPPORT_PLAY_MEDIA
+                          SUPPORT_SELECT_SOURCE | SUPPORT_PLAY | SUPPORT_PLAY_MEDIA
 
 KNOWN_HOSTS = []  # type: List[str]
 DEFAULT_SOURCES = {'tv': 'TV', 'bd': 'Bluray', 'game': 'Game', 'aux1': 'Aux1',
@@ -38,7 +41,14 @@ DEFAULT_SOURCES = {'tv': 'TV', 'bd': 'Bluray', 'game': 'Game', 'aux1': 'Aux1',
                    'video5': 'Video 5', 'video6': 'Video 6',
                    'video7': 'Video 7', 'fm': 'Radio'}
 
+
 DEFAULT_PLAYABLE_SOURCES = ("fm", "am", "tuner")
+
+ONKYO_ZONE_SCHEMA = vol.Schema({
+    vol.Required('zone'): vol.In(CONF_VALID_ZONES, CONF_INVALID_ZONES_ERR),
+    vol.Optional('enabled'): cv.boolean,
+    vol.Optional('name'): cv.string
+})
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_HOST): cv.string,
@@ -47,6 +57,8 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
         vol.All(vol.Coerce(int), vol.Range(min=1, max=SUPPORTED_MAX_VOLUME)),
     vol.Optional(CONF_SOURCES, default=DEFAULT_SOURCES):
         {cv.string: cv.string},
+    vol.Optional(CONF_ZONES):
+        vol.All(cv.ensure_list, [ONKYO_ZONE_SCHEMA]),
 })
 
 TIMEOUT_MESSAGE = 'Timeout waiting for response.'
@@ -62,31 +74,34 @@ ONKYO_SELECT_OUTPUT_SCHEMA = vol.Schema({
 SERVICE_SELECT_HDMI_OUTPUT = 'onkyo_select_hdmi_output'
 
 
-def determine_zones(receiver):
+def determine_zones(receiver, zonesConfig):
     """Determine what zones are available for the receiver."""
     out = {
         "zone2": False,
         "zone3": False,
     }
-    try:
-        _LOGGER.debug("Checking for zone 2 capability")
-        receiver.raw("ZPW")
-        out["zone2"] = True
-    except ValueError as error:
-        if str(error) != TIMEOUT_MESSAGE:
-            raise error
-        _LOGGER.debug("Zone 2 timed out, assuming no functionality")
-    try:
-        _LOGGER.debug("Checking for zone 3 capability")
-        receiver.raw("PW3")
-        out["zone3"] = True
-    except ValueError as error:
-        if str(error) != TIMEOUT_MESSAGE:
-            raise error
-        _LOGGER.debug("Zone 3 timed out, assuming no functionality")
+    checkZone2 = next((zone for zone in zonesConfig if (zone.get('zone') == 'Zone2' and zone.get('enabled'))), None)
+    checkZone3 = next((zone for zone in zonesConfig if (zone.get('zone') == 'Zone3' and zone.get('enabled'))), None)
+    if checkZone2 != None:
+        try:
+            _LOGGER.debug("Checking for zone 2 capability")
+            receiver.raw("ZPW")
+            out["zone2"] = True
+        except ValueError as error:
+            if str(error) != TIMEOUT_MESSAGE:
+                raise error
+            _LOGGER.debug("Zone 2 timed out, assuming no functionality")
+    if checkZone3 != None:
+        try:
+            _LOGGER.debug("Checking for zone 3 capability")
+            receiver.raw("PW3")
+            out["zone3"] = True
+        except ValueError as error:
+            if str(error) != TIMEOUT_MESSAGE:
+                raise error
+            _LOGGER.debug("Zone 3 timed out, assuming no functionality")
 
     return out
-
 
 def setup_platform(hass, config, add_entities, discovery_info=None):
     """Set up the Onkyo platform."""
@@ -120,22 +135,28 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
             ))
             KNOWN_HOSTS.append(host)
 
-            zones = determine_zones(receiver)
+            zonesConfig = config.get('zones')
+            zones = determine_zones(receiver, zonesConfig)
 
             # Add Zone2 if available
             if zones["zone2"]:
                 _LOGGER.debug("Setting up zone 2")
+                zoneCfg = next((zone for zone in zonesConfig if zone.get('zone') == 'Zone2' ), {})
+                zoneName = zoneCfg.get('name',"{} Zone 2".format(config[CONF_NAME]))
                 hosts.append(OnkyoDeviceZone(
                     "2", receiver,
                     config.get(CONF_SOURCES),
-                    name="{} Zone 2".format(config[CONF_NAME])))
+                    name=zoneName))
             # Add Zone3 if available
             if zones["zone3"]:
                 _LOGGER.debug("Setting up zone 3")
+                zoneCfg = next((zone for zone in zonesConfig if zone.get('zone') == 'Zone3' ), {})
+                zoneName = zoneCfg.get('name',"{} Zone 3".format(config[CONF_NAME]))
                 hosts.append(OnkyoDeviceZone(
                     "3", receiver,
                     config.get(CONF_SOURCES),
-                    name="{} Zone 3".format(config[CONF_NAME])))
+                    name=zoneName))
+
         except OSError:
             _LOGGER.error("Unable to connect to receiver at %s", host)
     else:
